@@ -1,0 +1,17 @@
+// Only run on  Jenkins Master as 
+// this has necessary IAM privs to invoke  Lambda functions
+stage 'Restore  from Snapshot'
+node('master') {
+    // RBuild Payload
+    sh """
+	/*aws lambda invoke \
+	--invocation-type RequestResponse \
+	--log-type Tail \
+	--region ${AWSRegion} \
+	--function-name ${LambdaFunction} \
+	--payload \\'{ \\"EventType\\":\\"RestoreRDSInstanceFromSnapshot\\", \\"RDSName\\":\\"${RDSName}\\"}\\'
+	*/
+	OUTPUT=/tmp\/${{LambdaFunction}}.`date +%d%m%y%H%M%s`
+	touch $OUTPUT
+	"""
+}

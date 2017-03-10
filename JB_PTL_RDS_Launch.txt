@@ -1,0 +1,135 @@
+// Only run on  Jenkins Master as 
+// this has necessary IAM privs to invoke  Lambda functions
+stage 'Restore  from Snapshot'
+node('master') {
+	retry(3) {
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"RestoreRDSInstanceFromSnapshot\", \"RDSName\":\"${RDSName}\", \"RDSBaseSnap\": \"${RDSBaseSnap}\", \"RDSSubnet\": \"${RDSSubnet}\"}' \
+			/tmp/JB_PTL_RDS_Launch_launch.out | jq -r .LogResult | base64 --decode
+		"""
+	}
+}
+stage 'Wait for Restore to Complete'
+node('master') {
+	// RDS Restore from Snap takes ~ >=5mins sleep then retry for status
+	retry(20) {
+	
+		sleep (time: 60, unit: 'SECONDS')
+
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"GetRDSStatus\", \"RDSName\":\"${RDSName}\"}' \
+			/tmp/JB_PTL_RDS_Launch_status.out | jq -r .LogResult | base64 --decode
+			
+		if [ `grep -i \"available\" /tmp/JB_PTL_RDS_Launch_status.out` ]; then 
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}
+stage 'Modify RDS SG and Param Groups'
+node('master') {
+	retry(3) {
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"ModifyRestoredDB\", \"RDSName\":\"${RDSName}\", \"RDSSG\": \"${RDSSG}\", \"RDSParamGroup\": \"${RDSParamGroup}\"}' \
+			/tmp/JB_PTL_RDS_Launch_modify.out | jq -r .LogResult | base64 --decode
+
+		if [ `grep -i \"LaunchComplete\" /tmp/JB_PTL_RDS_Launch_modify.out` ]; then 
+			# sleep to allow status to switch to modifying
+			sleep 30
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}
+stage 'Wait for SG and Param Group Change to Complete'
+node('master') {
+	retry(30) {
+		// Probelm here is status quickly becomes available following mod, then after~30s changes to modifying - do sleep first
+		sleep (time: 60, unit: 'SECONDS')
+
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"GetRDSStatus\", \"RDSName\":\"${RDSName}\"}' \
+			/tmp/JB_PTL_RDS_Launch_modifystatus.out | jq -r .LogResult | base64 --decode
+			
+		if [ `grep -i \"available\" /tmp/JB_PTL_RDS_Launch_modifystatus.out` ]; then 
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}
+
+stage 'Reboot RDS Instance'
+node('master') {
+	retry(3) {
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"RebootRDSInstance\", \"RDSName\":\"${RDSName}\"}' \
+			/tmp/JB_PTL_RDS_Launch_reboot.out | jq -r .LogResult | base64 --decode
+		
+		if [ `grep -i \"rebooting\" /tmp/JB_PTL_RDS_Launch_reboot.out` ]; then 
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}
+stage 'Wait for RDS Reboot to Complete'
+node('master') {
+	retry(30) {
+	
+		sleep (time: 10, unit: 'SECONDS')
+
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"GetRDSStatus\", \"RDSName\":\"${RDSName}\"}' \
+			/tmp/JB_PTL_RDS_Launch_rebootstatus.out | jq -r .LogResult | base64 --decode
+			
+		if [ `grep -i \"available\" /tmp/JB_PTL_RDS_Launch_rebootstatus.out` ]; then 
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}

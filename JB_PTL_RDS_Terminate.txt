@@ -1,0 +1,52 @@
+// Only run on  Jenkins Master as 
+// this has necessary IAM privs to invoke  Lambda functions
+stage 'Terminate RDS Instance'
+node('master') {
+	retry(3) {}
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+		--invocation-type RequestResponse \
+		--log-type Tail \
+		--region ${AWSRegion} \
+		--function-name ${LambdaFunction} \
+		--payload '{ \"EventType\":\"TerminateRDSInstance\", \"RDSName\":\"${RDSName}\"}' \
+		/tmp/jb_ptl_rds_terminate_output.out | jq -r .LogResult | base64 --decode
+		
+		if [ `grep -i \"TerminateComplete\" /tmp/jb_ptl_rds_terminate_output.out` ]; then 
+				exit 0; 
+			else
+				exit 1
+		fi
+		"""
+		
+		timeout(time: 1, unit: 'MINUTES') {
+			echo 'Build Timedout'
+		}
+	}
+}
+//could query for status of final snapshot here
+stage 'Wait for RDS Delete to Complete'
+node('master') {
+	retry(30) {
+	
+		sleep (time: 60, unit: 'SECONDS')
+
+		sh """
+		export https_proxy=http://proxy.shd.proxy.nonprod.dvsa.aws:3128
+		aws lambda invoke \
+			--invocation-type RequestResponse \
+			--log-type Tail \
+			--region ${AWSRegion} \
+			--function-name ${LambdaFunction} \
+			--payload '{ \"EventType\":\"GetRDSStatus\", \"RDSName\":\"${RDSName}\"}' \
+			/tmp/JB_PTL_RDS_Launch_deletestatus.out | jq -r .LogResult | base64 --decode
+			
+		if [ `grep -i \"DBInstanceNotFound\" /tmp/JB_PTL_RDS_Launch_deletestatus.out` ]; then 
+			exit 0; 
+		else
+			exit 1
+		fi
+		"""
+	}
+}
